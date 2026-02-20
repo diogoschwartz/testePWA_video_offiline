@@ -1,9 +1,11 @@
 importScripts('https://cdn.jsdelivr.net/npm/dexie@3.2.4/dist/dexie.min.js');
 
 const db = new Dexie('VodPwaDB');
-db.version(1).stores({
+db.version(2).stores({
     videos: 'id, title, size, downloaded, duration, mimeType',
-    chunks: '++id, [videoId+index], videoId, index, size'
+    chunks: '++id, [videoId+index], videoId, index, size',
+    playlists: '++id, name, createdAt',
+    playlist_videos: '++id, playlistId, videoId, url, title, order'
 });
 
 const VIDEO_PREFIX = '/offline-video/';

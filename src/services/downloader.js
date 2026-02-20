@@ -97,3 +97,29 @@ export async function deleteVideo(videoId) {
     await db.chunks.where({ videoId }).delete();
     await db.videos.delete(videoId);
 }
+
+export async function downloadPlaylistUrls(videosList, onVideoProgress, onVideoComplete) {
+    // videosList = [{ id: 'v1', url: '...' }, { id: 'v2', url: '...' }]
+    for (let i = 0; i < videosList.length; i++) {
+        const video = videosList[i];
+        try {
+            // Verifica se ja baixou 100%
+            const existing = await db.videos.get(video.id);
+            if (existing && existing.downloaded >= existing.size && existing.size > 0) {
+                if (onVideoComplete) onVideoComplete(video.id, true);
+                continue; // Pula pro próximo
+            }
+
+            if (onVideoProgress) onVideoProgress(video.id, 0, 100); // init indication
+
+            await downloadVideo(video.url, video.id, (downloaded, total) => {
+                if (onVideoProgress) onVideoProgress(video.id, downloaded, total);
+            });
+
+            if (onVideoComplete) onVideoComplete(video.id, true);
+        } catch (err) {
+            console.error(`Falha baixando item da fila [${video.id}]:`, err);
+            if (onVideoComplete) onVideoComplete(video.id, false, err);
+        }
+    }
+}
