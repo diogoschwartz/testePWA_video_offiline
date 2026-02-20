@@ -1,6 +1,7 @@
 import './style.css';
 import { db } from './services/db';
-import { downloadPlaylistUrls, deleteVideo } from './services/downloader';
+import { downloadPlaylistUrls, deleteVideo, downloadVideo } from './services/downloader';
+import { getRemoteVideos } from './services/supabase';
 
 const app = document.querySelector('#app');
 
@@ -11,6 +12,9 @@ let viewState = 'HOME'; // HOME | PLAYLIST
 let currentPlaylistId = null;
 let activeVideoIndex = -1; // Pra tocar sequencial
 let playingVideoId = null;
+
+// Cache do catálogo pra não bater no DB toda hora
+let cachedCatalog = [];
 
 // ==========================================
 // RENDERIZADOR BASE
@@ -24,29 +28,54 @@ function render() {
 }
 
 // ==========================================
-// TELA INITIAL: Criar / Listar Playlists
+// TELA INITIAL: Criar / Listar Playlists / Catálogo
 // ==========================================
 async function renderHome() {
   const playlists = await db.playlists.toArray();
 
+  // Fetch do Supabase (Apenas se ainda nao o fez)
+  if (cachedCatalog.length === 0) {
+    cachedCatalog = await getRemoteVideos();
+  }
+
   app.innerHTML = `
-    <div class="card">
-      <h1>Playlists Offline</h1>
-      <p>Crie coleções de vídeos para assistir sem internet.</p>
-      
-      <div class="input-group" style="margin-top: 1rem;">
-         <label style="font-size: 0.85rem; font-weight: 500;">Nova Playlist:</label>
-         <div class="input-row">
-           <input type="text" id="new-playlist-name" placeholder="Ex: Curso de Dentista Módulo 1" />
-           <button id="btn-create-playlist">Criar</button>
-         </div>
-      </div>
+    <!-- HEADER APP -->
+    <div style="text-align:center; padding-bottom: 2rem;">
+        <h1 style="color: var(--primary); font-size: 2.2rem;">PWA Premium VOD</h1>
+        <p>Filmes e Cursos. Offline First.</p>
     </div>
 
+    <!-- SEÇÃO 1: CATÁLOGO NUVEM (SUPABASE) -->
+    <div class="card" style="border-top: 4px solid var(--primary);">
+       <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h2>Catálogo em Nuvem ☁️</h2>
+          <span style="font-size:0.8rem; color: var(--text-muted)">via Supabase</span>
+       </div>
+       <div class="list-group">
+          ${cachedCatalog.length === 0 ? '<p class="info">Nenhum vídeo cadastrado no Supabase ainda.</p>' : ''}
+          ${cachedCatalog.map(v => `
+              <div class="list-item" style="display: flex; gap: 1rem; align-items:flex-start;">
+                 ${v.thumbnail_url ? `<img src="${v.thumbnail_url}" style="width: 100px; border-radius: 6px; aspect-ratio: 16/9; object-fit: cover; background: #eee" />` : ''}
+                 <div class="item-info">
+                     <div class="item-title">${v.title}</div>
+                     <div class="item-meta" style="white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">${v.description || 'Sem descrição.'}</div>
+                 </div>
+              </div>
+          `).join('')}
+       </div>
+    </div>
+
+    <!-- SEÇÃO 2: PLAYLISTS LOCAIS (Sua Biblioteca) -->
     <div class="card">
-      <h2>Suas Playlists</h2>
-      <div class="list-group" id="playlist-list">
-         ${playlists.length === 0 ? '<p class="info">Nenhuma playlist. Crie uma acima!</p>' : ''}
+      <h2>Sua Biblioteca Offline</h2>
+      <div class="input-group" style="margin-top: 1rem;">
+         <div class="input-row">
+           <input type="text" id="new-playlist-name" placeholder="Criar nova playlist... Ex: Minha Viagem" />
+           <button id="btn-create-playlist">+ Criar</button>
+         </div>
+      </div>
+      <div class="list-group" id="playlist-list" style="margin-top: 1rem;">
+         ${playlists.length === 0 ? '<p class="info">Nenhuma playlist. Crie uma acima para começar a adicionar os vídeos da nuvem!</p>' : ''}
       </div>
     </div>
   `;
@@ -62,7 +91,7 @@ async function renderHome() {
     }
   });
 
-  // Bind List
+  // Bind List de Playlists
   const listEl = document.getElementById('playlist-list');
   for (const pl of playlists) {
     const count = await db.playlist_videos.where({ playlistId: pl.id }).count();
@@ -71,9 +100,9 @@ async function renderHome() {
     item.innerHTML = `
         <div class="item-info">
            <div class="item-title">${pl.name}</div>
-           <div class="item-meta">${count} vídeos</div>
+           <div class="item-meta">${count} mídia(s)</div>
         </div>
-        <button class="ghost" style="padding: 0.4rem 0.8rem;">Abrir</button>
+        <button class="ghost" style="padding: 0.4rem 0.8rem;">Entrar</button>
      `;
     item.addEventListener('click', () => {
       currentPlaylistId = pl.id;
@@ -86,13 +115,12 @@ async function renderHome() {
 }
 
 // ==========================================
-// TELA PLAYLIST: Player, Add URL, Lista
+// TELA PLAYLIST: Player, Add via Catalog, Fila
 // ==========================================
 async function renderPlaylistView() {
   const playlist = await db.playlists.get(currentPlaylistId);
   if (!playlist) { viewState = 'HOME'; return render(); }
 
-  // Busca do DB
   const videos = await db.playlist_videos.where({ playlistId: playlist.id }).sortBy('order');
   const videosMeta = await Promise.all(videos.map(v => db.videos.get(v.videoId)));
 
@@ -107,29 +135,28 @@ async function renderPlaylistView() {
       <video id="player" controls controlsList="nodownload" autoplay></video>
     </div>
     
-    <!-- ADD NOVO VIDEO NA PLAYLIST -->
+    <!-- ADD NOVO VIDEO NA PLAYLIST (VIA CATALOGO AGORA) -->
     <div class="card">
-       <h3>Adicionar Vídeo</h3>
-       <div class="input-group">
-         <div class="input-row">
-            <input type="text" id="new-video-title" placeholder="Título. Ex: Aula 01" style="width: 30%" />
-            <input type="text" id="new-video-url" placeholder="URL do arquivo .mp4..." style="flex:1" />
-         </div>
-         <button id="btn-add-video" style="align-self: flex-start; margin-top: 0.5rem">Adicionar na Fila</button>
+       <h3>Adicionar Mídia à Lista</h3>
+       <div class="input-row">
+         <select id="catalog-select" style="flex:1; padding: 0.6rem; border-radius: 8px; border: 1px solid var(--border); font-family: inherit;">
+            <option value="">Selecione um vídeo da nuvem...</option>
+            ${cachedCatalog.map(c => `<option value="${c.id}">${c.title}</option>`).join('')}
+         </select>
+         <button id="btn-add-video" style="align-self: flex-start;">+ Inserir</button>
        </div>
     </div>
 
-    <!-- LISTA DE VIDEOS -->
+    <!-- LISTA DE VIDEOS COM BOTÕES VISUAIS -->
     <div class="card">
        <div style="display:flex; justify-content:space-between; align-items: center; margin-bottom: 1rem;">
-          <h3>Fila de Reprodução</h3>
+          <h3>🎬 Reprodução e Downloads</h3>
           <div>
-            <button id="btn-download-all">Baixar Offline</button>
-            <button id="btn-delete-all" class="danger">Limpar Mídia</button>
+            <button id="btn-download-all" class="ghost" style="font-size: 0.8rem; padding: 0.4rem 0.6rem">Sincronizar Tudo</button>
+            <button id="btn-delete-all" class="danger" style="font-size: 0.8rem; padding: 0.4rem 0.6rem">Esvaziar Storage</button>
           </div>
        </div>
 
-       <!-- Painel de Porgresso Global Oculto -->
        <div id="download-panel" class="progress-container hidden" style="margin-bottom: 1rem;">
           <div class="info" id="dl-status">Iniciando download...</div>
           <progress id="dl-progress" value="0" max="100"></progress>
@@ -146,24 +173,26 @@ async function renderPlaylistView() {
     render();
   });
 
-  // ADD VIDEO
+  // ADD VIDEO (From Catalog)
   document.getElementById('btn-add-video').addEventListener('click', async () => {
-    const tEl = document.getElementById('new-video-title');
-    const uEl = document.getElementById('new-video-url');
-    if (tEl.value.trim() && uEl.value.trim()) {
-      const vidId = 'vid_' + Date.now();
+    const catalogId = document.getElementById('catalog-select').value;
+    if (catalogId) {
+      const remoteInfo = cachedCatalog.find(c => c.id === catalogId);
+      if (!remoteInfo) return;
+
+      const vidId = 'vid_' + remoteInfo.id + '_' + Date.now();
       await db.playlist_videos.put({
         playlistId: playlist.id,
         videoId: vidId,
-        url: uEl.value.trim(),
-        title: tEl.value.trim(),
+        url: remoteInfo.download_url,
+        title: remoteInfo.title,
         order: videos.length
       });
-      render(); // Reload rapido
+      render();
     }
   });
 
-  // RENDERIZA LISTA DOS VÍDEOS COM STATUS GHOST
+  // RENDERIZA LISTA DOS VÍDEOS COM BOTÕES DOWNLOAD/PLAY INLINE
   const listEl = document.getElementById('video-list');
   videos.forEach((v, idx) => {
     const meta = videosMeta[idx];
@@ -171,24 +200,59 @@ async function renderPlaylistView() {
 
     const item = document.createElement('div');
     item.className = 'list-item';
-    if (!isDownloaded) item.classList.add('not-downloaded');
     if (idx === activeVideoIndex) item.classList.add('active');
+
+    let actionBtnHTML = '';
+    if (isDownloaded) {
+      actionBtnHTML = `<button class="btn-play-item" data-idx="${idx}" style="background-color: var(--success);">▶ Play</button>`;
+    } else {
+      actionBtnHTML = `<button class="btn-download-item ghost" data-idx="${idx}" data-vid="${v.videoId}" data-url="${v.url}">⬇️ Baixar</button>`;
+    }
 
     item.innerHTML = `
         <div class="item-info">
            <div class="item-title">${v.order + 1}. ${v.title}</div>
-           <div class="item-meta">${isDownloaded ? 'Disponível Offline ✓' : 'Precisa de Download (Remoto)'}</div>
+           <div class="item-meta">
+              ${isDownloaded ? '<span style="color:var(--success)">✓ Offline Prontinho</span>' : '☁️ Nuvem (Não baixado)'}
+           </div>
         </div>
-        <button class="ghost" style="padding: 0.3rem 0.6rem;">${idx === activeVideoIndex ? 'Tocando' : 'Tocar'}</button>
+        <div>
+           ${idx === activeVideoIndex ? '<span style="margin-right: 1rem; color: var(--primary); font-weight:bold; font-size: 0.8rem">Tocando</span>' : ''}
+           ${actionBtnHTML}
+        </div>
      `;
 
-    item.addEventListener('click', () => {
-      playSequence(idx, videos, videosMeta);
-    });
     listEl.appendChild(item);
   });
 
-  // BOTÕES DE AÇÃO LOTE
+  // Event Listeners Dinamicos pros botoes da lista
+  document.querySelectorAll('.btn-play-item').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const idx = parseInt(btn.getAttribute('data-idx'));
+      playSequence(idx, videos, videosMeta);
+    });
+  });
+
+  document.querySelectorAll('.btn-download-item').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const url = btn.getAttribute('data-url');
+      const vId = btn.getAttribute('data-vid');
+      btn.disabled = true;
+      btn.innerText = "⏳...";
+
+      try {
+        await downloadVideo(url, vId, (d, t) => { });
+        render(); // Rerenderiza pra virar botaO PLAY verde
+      } catch (err) {
+        console.error(err);
+        btn.disabled = false;
+        btn.innerText = "❌ Falha";
+        btn.style.color = "var(--danger)";
+      }
+    });
+  });
+
+  // BOTÕES MESTRES
   const btnDownloadAll = document.getElementById('btn-download-all');
   btnDownloadAll.addEventListener('click', () => initiateDownloadQueue(videos));
 
@@ -199,14 +263,12 @@ async function renderPlaylistView() {
     render();
   });
 
-  // SE JÁ ESTIVER TOCANDO, CONECTA EVENTOS NO PLAYER
+  // Lógica de PLAY SEQUENCIAL
   if (activeVideoIndex !== -1) {
     const player = document.getElementById('player');
     player.onended = () => {
-      // Auto-play next available!
       playNextOffline(activeVideoIndex, videos, videosMeta);
     };
-    // Se houver erro de decodificacao (falta conexao e nao ta baixado), pula pro prox tbm
     player.onerror = () => {
       console.warn("Vídeo corrompido ou offline falhou, pulando...");
       playNextOffline(activeVideoIndex, videos, videosMeta);
@@ -310,6 +372,31 @@ async function initiateDownloadQueue(videosObjList) {
   }, 1500);
 }
 
+
+// ==========================================
+// UX: AUTO-FULLSCREEN POR ROTAÇÃO (MOBILE)
+// ==========================================
+window.addEventListener('orientationchange', () => {
+  const player = document.getElementById('player');
+  if (!player) return;
+
+  // 90 ou -90 (Landscape) | 0 ou 180 (Portrait)
+  if (Math.abs(window.orientation) === 90) {
+    if (player.requestFullscreen) {
+      player.requestFullscreen().catch(err => console.log('Fullscreen barrado pelo SO:', err));
+    } else if (player.webkitRequestFullscreen) { /* Safari */
+      player.webkitRequestFullscreen();
+    }
+  } else {
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+      } else if (document.webkitExitFullscreen) { /* Safari */
+        document.webkitExitFullscreen();
+      }
+    }
+  }
+});
 
 // ==========================================
 // BOOT INIT E SW REGISTRATION
