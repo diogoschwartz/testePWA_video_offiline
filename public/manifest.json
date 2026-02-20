@@ -1,0 +1,21 @@
+{
+  "name": "PWA VOD Offline",
+  "short_name": "VOD Offline",
+  "description": "Premium VOD PWA with Offline Storage via IndexedDB",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#818cf8",
+  "icons": [
+    {
+      "src": "/vite.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "/vite.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}
