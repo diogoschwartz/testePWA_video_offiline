@@ -11,6 +11,10 @@ app.innerHTML = `
     <div class="video-container">
       <video id="player" controls controlsList="nodownload"></video>
     </div>
+    
+    <div class="input-group">
+      <input type="text" id="video-url-input" placeholder="Cole a URL do vídeo .mp4 aqui..." value="https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4" />
+    </div>
 
     <div class="controls">
       <button id="btn-download">Baixar Vídeo</button>
@@ -26,7 +30,7 @@ app.innerHTML = `
 `;
 
 // Variables
-const SAMPLE_VIDEO_URL = 'http://s3-rustfs-c19102-157-173-125-254.traefik.me/teste/129%20-%20Profissa%CC%83o%20Dentista%20e%20doenc%CC%A7as%20bucaiss.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=rustfsadmin%2F20260220%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260220T133750Z&X-Amz-Expires=7200&X-Amz-Signature=1a837c031af6b800c056d9a65d2a1b7685035834e8f47b9b230c211ec9d42cba&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject';
+const SAMPLE_VIDEO_URL = 'https://s3.mycloudi.dev/teste/129%20-%20Profissa%CC%83o%20Dentista%20e%20doenc%CC%A7as%20bucaiss.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=rustfsadmin%2F20260220%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260220T195503Z&X-Amz-Expires=7200&X-Amz-Signature=5a06595022e863701e8329d5539ca8aab1dd17549af320e7694990a077f4feda&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject';
 const VIDEO_ID = 'elephants-dream';
 
 const btnDownload = document.getElementById('btn-download');
@@ -61,10 +65,17 @@ async function updateUI() {
 }
 
 btnDownload.addEventListener('click', async () => {
+  const customUrl = urlInput.value.trim();
+  if (!customUrl) {
+    statusText.innerHTML = `<span style="color: #fbbf24;">Por favor, insira uma URL válida.</span>`;
+    return;
+  }
+
   btnDownload.disabled = true;
+  urlInput.disabled = true;
   statusText.innerText = 'Conectando e baixando em chunks...';
   try {
-    await downloadVideo(SAMPLE_VIDEO_URL, VIDEO_ID, (downloaded, total) => {
+    await downloadVideo(customUrl, VIDEO_ID, (downloaded, total) => {
       if (total > 0) {
         const percent = Math.round((downloaded / total) * 100);
         progressBar.value = percent;
@@ -78,6 +89,7 @@ btnDownload.addEventListener('click', async () => {
   } catch (err) {
     console.error('ERRO COMPLETO:', err);
     statusText.innerHTML = `<span style="color: #ef4444; font-weight: bold;">Erro no download:</span> ${err.message || err.toString()}`;
+    urlInput.disabled = false;
     btnDownload.disabled = false;
   }
 });

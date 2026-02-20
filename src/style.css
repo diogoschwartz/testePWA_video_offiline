@@ -65,6 +65,33 @@ button {
   font-size: 0.95rem;
 }
 
+.input-group {
+  width: 100%;
+  display: flex;
+}
+
+.input-group input {
+  flex: 1;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.95rem;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.input-group input:focus {
+  border-color: var(--primary);
+}
+
+.input-group input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 button:hover {
   background-color: var(--primary-hover);
   transform: translateY(-2px);
