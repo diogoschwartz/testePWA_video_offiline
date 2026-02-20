@@ -312,9 +312,17 @@ async function initiateDownloadQueue(videosObjList) {
 
 
 // ==========================================
-// BOOT INIT
+// BOOT INIT E SW REGISTRATION
 // ==========================================
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js', { scope: '/' }));
-}
+import { registerSW } from 'virtual:pwa-register';
+
+const updateSW = registerSW({
+  onNeedRefresh() {
+    console.log("Novo conteúdo disponível. O SW vai atualizar o App Shell na próxima recarga.");
+  },
+  onOfflineReady() {
+    console.log("App pronto para trabalhar 100% offline nativamente.");
+  },
+});
+
 render();
