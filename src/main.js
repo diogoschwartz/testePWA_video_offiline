@@ -69,11 +69,15 @@ btnDownload.addEventListener('click', async () => {
         const percent = Math.round((downloaded / total) * 100);
         progressBar.value = percent;
         statusText.innerText = `Baixando... ${percent}% (${(downloaded / 1024 / 1024).toFixed(1)} MB - Salvo no IndexedDB)`;
+      } else {
+        // O S3 pode não enviar Content-Length
+        statusText.innerText = `Baixando... (${(downloaded / 1024 / 1024).toFixed(1)} MB baixados)`;
       }
     });
     updateUI();
   } catch (err) {
-    statusText.innerText = 'Erro no download!';
+    console.error('ERRO COMPLETO:', err);
+    statusText.innerHTML = `<span style="color: #ef4444; font-weight: bold;">Erro no download:</span> ${err.message || err.toString()}`;
     btnDownload.disabled = false;
   }
 });

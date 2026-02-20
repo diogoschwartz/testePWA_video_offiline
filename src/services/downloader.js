@@ -5,7 +5,11 @@ const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB por chunk
 export async function downloadVideo(url, videoId, onProgress) {
     try {
         const response = await fetch(url);
-        if (!response.ok) throw new Error(`Falha no fetch ${url}: ${response.status}`);
+        if (!response.ok) {
+            let errorTxt = '';
+            try { errorTxt = await response.text(); } catch (e) { }
+            throw new Error(`Falha HTTP ${response.status} ${response.statusText}: ${errorTxt.substring(0, 100)}`);
+        }
 
         const contentLength = response.headers.get('content-length');
         const totalSize = contentLength ? parseInt(contentLength, 10) : 0;
