@@ -11,19 +11,70 @@ db.version(2).stores({
 const VIDEO_PREFIX = '/offline-video/';
 const CHUNK_SIZE = 2 * 1024 * 1024; // Deve bater com o downloader.js
 
+const CACHE_NAME = 'vod-app-shell-v1';
+const ASSETS_TO_CACHE = [
+    '/',
+    '/index.html',
+    '/manifest.json',
+    '/style.css',
+    '/src/main.js'
+];
+
 self.addEventListener('install', (event) => {
-    self.skipWaiting(); // Força instalação imediata
+    // Adiciona o esqueleto do site no Cache pre-cache
+    event.waitUntil(
+        caches.open(CACHE_NAME).then((cache) => {
+            return cache.addAll(ASSETS_TO_CACHE);
+        })
+    );
+    self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
+    // Limpa caches antigos do app shell
+    event.waitUntil(
+        caches.keys().then((keyList) => {
+            return Promise.all(keyList.map((key) => {
+                if (key !== CACHE_NAME) {
+                    return caches.delete(key);
+                }
+            }));
+        })
+    );
     event.waitUntil(self.clients.claim());
 });
 
 self.addEventListener('fetch', (event) => {
     const url = new URL(event.request.url);
 
+    // 1. Interceptação de Vídeo Offline via IDB
     if (url.pathname.startsWith(VIDEO_PREFIX)) {
-        event.respondWith(handleVideoRequest(event.request, url.pathname));
+        return event.respondWith(handleVideoRequest(event.request, url.pathname));
+    }
+
+    // 2. Interceptação de Assets (App Shell) ou API
+    // Stale-while-revalidate ou Network-first fallback to cache
+    if (event.request.method === 'GET' && !url.pathname.startsWith('/api/') && !url.hostname.includes('s3') && !url.hostname.includes('googleapis')) {
+        event.respondWith(
+            caches.match(event.request).then((cachedResponse) => {
+                // Se ta no cache, devolve. Enquanto busca atualizado escondido (stale)
+                const fetchPromise = fetch(event.request).then((networkResponse) => {
+                    const responseClone = networkResponse.clone();
+                    caches.open(CACHE_NAME).then((cache) => {
+                        cache.put(event.request, responseClone);
+                    });
+                    return networkResponse;
+                }).catch(() => {
+                    // Modo full offline e sem cache (ex: arquivo novo nunca visto)
+                    // Se for request de pagina, manda index.html
+                    if (event.request.headers.get('accept').includes('text/html')) {
+                        return caches.match('/');
+                    }
+                });
+
+                return cachedResponse || fetchPromise;
+            })
+        );
     }
 });
 
