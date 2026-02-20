@@ -30,9 +30,9 @@ app.innerHTML = `
 `;
 
 // Variables
-const SAMPLE_VIDEO_URL = 'https://s3.mycloudi.dev/teste/129%20-%20Profissa%CC%83o%20Dentista%20e%20doenc%CC%A7as%20bucaiss.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=rustfsadmin%2F20260220%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20260220T195503Z&X-Amz-Expires=7200&X-Amz-Signature=5a06595022e863701e8329d5539ca8aab1dd17549af320e7694990a077f4feda&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject';
 const VIDEO_ID = 'elephants-dream';
 
+const urlInput = document.getElementById('video-url-input');
 const btnDownload = document.getElementById('btn-download');
 const btnDelete = document.getElementById('btn-delete');
 const btnPlay = document.getElementById('btn-play');
