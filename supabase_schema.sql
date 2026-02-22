@@ -7,6 +7,7 @@ CREATE TABLE public.remote_videos (
     title TEXT NOT NULL,
     description TEXT,
     download_url TEXT NOT NULL,
+    youtube_url TEXT,
     thumbnail_url TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
@@ -18,3 +19,4 @@ ALTER TABLE public.remote_videos ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Permitir leitura anonima de VODs" ON public.remote_videos
     FOR SELECT USING (true);
+
