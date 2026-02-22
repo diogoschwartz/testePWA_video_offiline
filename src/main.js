@@ -1,9 +1,10 @@
 import './style.css';
 import { db } from './services/db';
-import { downloadPlaylistUrls, deleteVideo, downloadVideo } from './services/downloader';
+import { downloadPlaylistUrls, deleteVideo, downloadVideo, cacheAsset, clearAllStorage } from './services/downloader';
 import { getRemoteVideos } from './services/supabase';
 import { registerSW } from 'virtual:pwa-register';
 import QRCode from 'qrcode';
+import { Html5Qrcode } from 'html5-qrcode';
 
 const app = document.querySelector('#app');
 
@@ -18,6 +19,45 @@ let playingVideoId = null;
 // Cache do catálogo pra não bater no DB toda hora
 let cachedCatalog = [];
 let isStoragePersistent = false;
+
+// ==========================================
+// COMPONENTES REUTILIZÁVEIS
+// ==========================================
+function showConfirm(title, message, confirmText = 'Confirmar', cancelText = 'Cancelar', isDestructive = false) {
+  return new Promise((resolve) => {
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.style.zIndex = '3000';
+
+    modal.innerHTML = `
+      <div class="modal-content confirmation-modal">
+        <h3 style="margin-bottom: 0.75rem; color: ${isDestructive ? 'var(--danger)' : 'var(--text)'}">${title}</h3>
+        <p style="margin-bottom: 2rem; font-size: 0.95rem; line-height: 1.5; color: var(--text-muted);">${message}</p>
+        <div style="display: flex; gap: 0.75rem; justify-content: flex-end;">
+          <button id="confirm-cancel" class="ghost" style="flex: 1;">${cancelText}</button>
+          <button id="confirm-ok" class="${isDestructive ? 'danger-fill' : ''}" style="flex: 1;">${confirmText}</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+    // Force reflow for animation
+    modal.offsetHeight;
+    modal.classList.add('active');
+
+    const cleanup = (result) => {
+      modal.classList.remove('active');
+      setTimeout(() => {
+        modal.remove();
+        resolve(result);
+      }, 300);
+    };
+
+    modal.querySelector('#confirm-ok').onclick = () => cleanup(true);
+    modal.querySelector('#confirm-cancel').onclick = () => cleanup(false);
+    modal.onclick = (e) => { if (e.target === modal) cleanup(false); };
+  });
+}
 
 // ==========================================
 // RENDERIZADOR BASE
@@ -256,7 +296,7 @@ async function renderPlaylistView() {
       const remoteInfo = cachedCatalog.find(c => c.id === catalogId);
       if (!remoteInfo) return;
 
-      const vidId = 'vid_' + remoteInfo.id + '_' + Date.now();
+      const vidId = 'vid_' + remoteInfo.id;
       await db.playlist_videos.put({
         playlistId: playlist.id,
         videoId: vidId,
@@ -319,8 +359,25 @@ async function renderPlaylistView() {
       // Don't trigger if clicking on an interactive button inside the item
       if (e.target.tagName === 'BUTTON') return;
       pressTimer = setTimeout(async () => {
-        if (confirm(`Deseja remover "${v.title}" desta playlist?`)) {
+        const confirmed = await showConfirm(
+          'Remover Vídeo',
+          `Deseja remover "${v.title}" desta playlist?`,
+          'Remover',
+          'Manter',
+          true
+        );
+        if (confirmed) {
           await db.playlist_videos.delete(v.id);
+
+          // Verificação de Deleção Segura: Só deleta do IDB (chunks/videos) se ninguém mais usa
+          const otherRefs = await db.playlist_videos.where({ videoId: v.videoId }).count();
+          if (otherRefs === 0) {
+            console.log(`🗑️ Removendo arquivo físico [${v.videoId}] - Nenhuma outra referência encontrada.`);
+            await deleteVideo(v.videoId);
+          } else {
+            console.log(`📁 Vídeo [${v.videoId}] removido da playlist, mas mantido em cache pois outras playlists o usam.`);
+          }
+
           render();
         }
       }, 600); // 600ms = long press
@@ -379,6 +436,11 @@ async function renderPlaylistView() {
       const txtSpan = document.getElementById(`dl-text-${vId}`);
 
       try {
+        // Cacheia a thumbnail se existir
+        if (v.thumbnail_url) {
+          cacheAsset(v.thumbnail_url);
+        }
+
         await downloadVideo(url, vId, (d, t) => {
           if (t > 0) {
             const pct = ((d / t) * 100).toFixed(0);
@@ -402,8 +464,22 @@ async function renderPlaylistView() {
   btnDownloadAll?.addEventListener('click', () => initiateDownloadQueue(videos));
 
   document.getElementById('btn-delete-all')?.addEventListener('click', async () => {
+    const confirmed = await showConfirm(
+      'Limpar Playlist',
+      'Isso removerá os vídeos desta playlist. Os arquivos só serão apagados do celular se não estiverem em outras playlists. Prosseguir?',
+      'Limpar',
+      'Cancelar',
+      true
+    );
+
+    if (!confirmed) return;
+
     for (const v of videos) {
-      await deleteVideo(v.videoId);
+      await db.playlist_videos.delete(v.id);
+      const otherRefs = await db.playlist_videos.where({ videoId: v.videoId }).count();
+      if (otherRefs === 0) {
+        await deleteVideo(v.videoId);
+      }
     }
     render();
   });
@@ -518,6 +594,8 @@ function playNextOffline(currentIndex, allVideos, allMeta) {
 // TELA SETTINGS: Configurações Globais
 // ==========================================
 async function renderSettings() {
+  const allPlaylists = await db.playlists.toArray();
+  const allVideos = await db.videos.toArray();
 
   let storageEstimateHtml = '';
   if (navigator.storage && navigator.storage.estimate) {
@@ -527,15 +605,18 @@ async function renderSettings() {
       const quotaMB = (estimate.quota / (1024 * 1024)).toFixed(2);
 
       storageEstimateHtml = `
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; padding: 1rem; background: var(--bg); border-radius: 8px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; padding: 1rem; background: var(--bg); border-radius: 8px; border: 1px solid var(--border);">
              <div>
                <div style="font-weight: 500;">Uso de Disco</div>
                <div style="font-size: 0.8rem; color: var(--text-muted);">${usedMB} MB / ${quotaMB} MB</div>
              </div>
              <div>
-               ${isStoragePersistent
-          ? '<span style="color: var(--success); font-size: 0.8rem; display: flex; align-items: center; gap: 0.2rem;">🔒 Persistente (Protegido)</span>'
-          : '<span style="color: var(--warning); font-size: 0.8rem; display: flex; align-items: center; gap: 0.2rem;">⚠️ Volátil (Risco de Limpeza)</span>'}
+                <div style="text-align: right;">
+                  ${isStoragePersistent
+          ? '<span style="color: var(--success); font-size: 0.8rem; display: flex; align-items: center; gap: 0.2rem; justify-content: flex-end;">🔒 Persistente</span>'
+          : '<span style="color: var(--warning); font-size: 0.8rem; display: flex; align-items: center; gap: 0.2rem; justify-content: flex-end;">⚠️ Volátil</span>'}
+                  <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 2px;">${allVideos.length} arquivos baixados</div>
+                </div>
              </div>
           </div>
        `;
@@ -554,29 +635,76 @@ async function renderSettings() {
     </div>
 
     <!-- SETTINGS CONTENT -->
-    <div style="width: 100%; max-width: 600px; margin: 0 auto; padding: 1rem;">
+    <div style="width: 100%; max-width: 600px; margin: 0 auto; padding: 1rem; display: flex; flex-direction: column; gap: 1.5rem;">
        ${storageEstimateHtml}
        
+       <!-- GESTÃO DE PLAYLISTS -->
+       <div class="card">
+          <h3 style="margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;">📂 Minhas Playlists</h3>
+          <div class="list-group">
+            ${allPlaylists.length === 0 ? '<p class="info">Nenhuma playlist criada.</p>' : ''}
+            ${allPlaylists.map(pl => `
+              <div class="list-item" style="cursor: default;">
+                <div class="item-info">
+                  <div class="item-title">${pl.name}</div>
+                  <div class="item-meta">Criada em ${new Date(pl.createdAt).toLocaleDateString()}</div>
+                </div>
+                <button class="btn-delete-playlist icon-btn danger" data-id="${pl.id}" data-name="${pl.name}" title="Apagar Playlist">🗑️</button>
+              </div>
+            `).join('')}
+          </div>
+       </div>
+
+       <!-- GESTÃO DE ARQUIVOS DE VÍDEO -->
+       <div class="card">
+          <h3 style="margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;">🎬 Arquivos Baixados</h3>
+          <div class="list-group">
+            ${allVideos.length === 0 ? '<p class="info">Nenhum vídeo baixado no cache.</p>' : ''}
+            ${allVideos.map(v => `
+              <div class="list-item" style="cursor: default;">
+                <div class="item-info">
+                  <div class="item-title">${v.title}</div>
+                  <div class="item-meta">${(v.size / (1024 * 1024)).toFixed(1)} MB • ${v.mimeType}</div>
+                </div>
+                <button class="btn-delete-file icon-btn danger" data-id="${v.id}" data-name="${v.title}" title="Remover Arquivo do Celular">🗑️</button>
+              </div>
+            `).join('')}
+          </div>
+       </div>
+
        <!-- QR EXPORT SECTION -->
-       <div class="card" style="border: 1px solid rgba(59, 130, 246, 0.3); margin-bottom: 1.5rem;">
+       <div class="card" style="border: 1px solid rgba(59, 130, 246, 0.3);">
           <h3 style="color: #93c5fd; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">📡 Compartilhar Playlist</h3>
           <p class="info" style="margin-bottom: 1rem;">Gere um QR Code para outro aparelho (com o app instalado) escanear e importar sua playlist instantaneamente.</p>
           
           <select id="export-playlist-select" style="width:100%; padding: 0.6rem; margin-bottom: 1rem; border-radius: 8px; border: 1px solid var(--border); font-family: inherit;">
               <option value="">Selecione a playlist...</option>
+              ${allPlaylists.map(pl => `<option value="${pl.id}">${pl.name}</option>`).join('')}
           </select>
           <button id="btn-export-qr" style="width: 100%;">Gerar QR Code 📷</button>
 
           <div id="qr-result-container" style="display:none; text-align:center; margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px dashed var(--border);">
               <p style="margin-bottom: 1rem; font-weight: 500;">Leia o código abaixo com a câmera:</p>
-              <canvas id="qr-canvas" style="border-radius: 8px; border: 4px solid white;"></canvas>
+              <canvas id="qr-canvas" style="border-radius: 8px; border: 4px solid white; display: inline-block;"></canvas>
+          </div>
+       </div>
+
+       <!-- QR SCANNER SECTION -->
+       <div class="card" style="border: 1px solid rgba(34, 197, 94, 0.3);">
+          <h3 style="color: #86efac; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">📸 Importar com Câmera</h3>
+          <p class="info" style="margin-bottom: 1rem;">Abra a câmera para escanear uma playlist de outro aparelho.</p>
+          <button id="btn-start-scanner" style="width: 100%; background: var(--success); color: white; border: none;">Escanear QR Code 📸</button>
+          
+          <div id="scanner-container" style="display:none; margin-top: 1.5rem; border-radius: 12px; overflow: hidden; position: relative;">
+            <div id="reader" style="width: 100%;"></div>
+            <button id="btn-stop-scanner" class="ghost" style="position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.5); color: white; border-radius: 50%; width: 40px; height: 40px; padding: 0;">✕</button>
           </div>
        </div>
 
        <div class="card" style="border: 1px solid rgba(239, 68, 68, 0.3);">
-          <h3 style="color: #fca5a5; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">🗑️ Armazenamento Local</h3>
-          <p class="info" style="margin-bottom: 1.5rem;">Apagar os vídeos limpará todo o cache offline baixado para o seu aparelho, liberando espaço na memória. As suas playlists continuam salvas.</p>
-          <button id="btn-delete-all-global" class="danger" style="width: 100%;">Esvaziar Todo o Storage Offline</button>
+          <h3 style="color: #fca5a5; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">⚠️ Zona de Perigo</h3>
+          <p class="info" style="margin-bottom: 1.5rem;">Apagar tudo limpará todo o cache offline do seu aparelho. Suas playlists continuarão existindo, mas os vídeos precisarão ser baixados novamente.</p>
+          <button id="btn-delete-all-global" class="danger" style="width: 100%;">Esvaziar Todo o Cache Offline</button>
        </div>
     </div>
   `;
@@ -586,29 +714,62 @@ async function renderSettings() {
     render();
   });
 
-  // PREENCHER OPÇÕES DO SELECT
-  const exportSelect = document.getElementById('export-playlist-select');
-  const allPlaylists = await db.playlists.toArray();
-  allPlaylists.forEach(pl => {
-    const opt = document.createElement('option');
-    opt.value = pl.id;
-    opt.innerText = pl.name;
-    exportSelect.appendChild(opt);
+  // BIND: DELETAR PLAYLIST
+  document.querySelectorAll('.btn-delete-playlist').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = Number(btn.getAttribute('data-id'));
+      const name = btn.getAttribute('data-name');
+
+      const confirmed = await showConfirm(
+        'Apagar Playlist',
+        `Deseja mesmo remover a playlist "${name}"? Os arquivos de vídeo serão mantidos no celular.`,
+        'Apagar',
+        'Cancelar',
+        true
+      );
+
+      if (confirmed) {
+        await db.playlist_videos.where({ playlistId: id }).delete();
+        await db.playlists.delete(id);
+        renderSettings();
+      }
+    });
+  });
+
+  // BIND: DELETAR ARQUIVO DE VÍDEO
+  document.querySelectorAll('.btn-delete-file').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-id');
+      const name = btn.getAttribute('data-name');
+
+      const confirmed = await showConfirm(
+        'Remover Arquivo',
+        `Deseja apagar o arquivo de "${name}" do seu celular? Ele continuará na playlist, mas precisará de internet para tocar ou ser baixado novamente.`,
+        'Apagar Arquivo',
+        'Cancelar',
+        true
+      );
+
+      if (confirmed) {
+        await deleteVideo(id);
+        renderSettings();
+      }
+    });
   });
 
   // GERAR QR CODE
   document.getElementById('btn-export-qr').addEventListener('click', async () => {
+    const exportSelect = document.getElementById('export-playlist-select');
     const plId = Number(exportSelect.value);
     if (!plId) return alert('Selecione uma playlist primeiro.');
 
     const pl = allPlaylists.find(x => x.id === plId);
     const plVideos = await db.playlist_videos.where({ playlistId: plId }).sortBy('order');
 
-    // Simplificando o payload para caber num QR
     const payload = {
       name: pl.name,
       cover: pl.cover_image_url || null,
-      videos: plVideos.map(v => ({ id: v.videoId.split('_')[1], title: v.title })) // Pegando a ID remote pura do remoteInfo para re-catálogo
+      videos: plVideos.map(v => ({ id: v.videoId.replace('vid_', ''), title: v.title }))
     };
 
     const encodedData = encodeURIComponent(JSON.stringify(payload));
@@ -622,25 +783,74 @@ async function renderSettings() {
       qrContainer.style.display = 'block';
     } catch (err) {
       console.error(err);
-      alert("Erro ao gerar QR Code. A playlist pode ser muito grande.");
+      alert("Erro ao gerar QR Code.");
     }
   });
 
-  document.getElementById('btn-delete-all-global').addEventListener('click', async () => {
-    if (!confirm("Atenção: Isso vai apagar TODOS os registros e vídeos do cache offline de todas as playlists. Seu aparelho ficará limpo. Confirma?")) return;
+  // SCANNER DE QR CODE (HTML5-QRCODE)
+  let html5QrCode = null;
 
-    // Deleta os vídeos globalmente
-    const allVideos = await db.videos.toArray();
-    for (const v of allVideos) {
-      await deleteVideo(v.id);
+  const stopScanner = () => {
+    if (html5QrCode && html5QrCode.isScanning) {
+      html5QrCode.stop().then(() => {
+        const container = document.getElementById('scanner-container');
+        if (container) container.style.display = 'none';
+      });
+    } else {
+      const container = document.getElementById('scanner-container');
+      if (container) container.style.display = 'none';
     }
+  };
 
-    // Remove o status das playlists também para forçar reset
-    await db.videos.clear();
-    await db.chunks.clear();
+  const startScannerBtn = document.getElementById('btn-start-scanner');
+  if (startScannerBtn) {
+    startScannerBtn.addEventListener('click', async () => {
+      const scannerContainer = document.getElementById('scanner-container');
+      scannerContainer.style.display = 'block';
+
+      if (!html5QrCode) {
+        html5QrCode = new Html5Qrcode("reader");
+      }
+
+      const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+
+      try {
+        await html5QrCode.start(
+          { facingMode: "environment" },
+          config,
+          (decodedText) => {
+            stopScanner();
+            handleImportData(decodedText);
+          }
+        );
+      } catch (err) {
+        console.error("Erro ao abrir câmera", err);
+        alert("Não foi possível acessar a câmera. Verifique as permissões de privacidade.");
+        scannerContainer.style.display = 'none';
+      }
+    });
+  }
+
+  const stopScannerBtn = document.getElementById('btn-stop-scanner');
+  if (stopScannerBtn) {
+    stopScannerBtn.addEventListener('click', stopScanner);
+  }
+
+  document.getElementById('btn-delete-all-global').addEventListener('click', async () => {
+    const confirmed = await showConfirm(
+      'Limpar Tudo',
+      "Atenção: Isso vai apagar TODOS os registros e vídeos do cache offline de todas as playlists. Seu aparelho ficará limpo. Confirma?",
+      'Apagar Tudo',
+      'Cancelar',
+      true
+    );
+
+    if (!confirmed) return;
+
+    await clearAllStorage();
 
     alert("Armazenamento esvaziado com sucesso!");
-    render();
+    renderSettings();
   });
 }
 
@@ -648,7 +858,13 @@ async function renderSettings() {
 // ORQUESTRAÇÃO DE DOWNLOAD LOTE
 // ==========================================
 async function initiateDownloadQueue(videosObjList) {
-  const listForQueue = videosObjList.map(v => ({ id: v.videoId, url: v.url, title: v.title }));
+  // Cacheia a capa da playlist se existir
+  const playlist = await db.playlists.get(currentPlaylistId);
+  if (playlist && playlist.cover_image_url) {
+    cacheAsset(playlist.cover_image_url);
+  }
+
+  const listForQueue = videosObjList.map(v => ({ id: v.videoId, url: v.url, title: v.title, thumbnail: v.thumbnail_url }));
 
   document.getElementById('download-panel').classList.remove('hidden');
   const dlStatus = document.getElementById('dl-status');
@@ -669,6 +885,12 @@ async function initiateDownloadQueue(videosObjList) {
   await downloadPlaylistUrls(
     listForQueue,
     (vId, downloadedObjSize, totalObjSize) => {
+      // Cacheia a thumbnail na fila se ainda nao o fez
+      const item = listForQueue.find(x => x.id === vId);
+      if (item && item.thumbnail) {
+        cacheAsset(item.thumbnail);
+      }
+
       // Update individual
       const pctItem = totalObjSize > 0 ? (downloadedObjSize / totalObjSize) : 0;
       progressMap[vId] = pctItem;
@@ -746,13 +968,26 @@ async function checkDeepLinks() {
   const urlParams = new URLSearchParams(window.location.search);
   const importData = urlParams.get('import');
 
+  if (importData) {
+    handleImportData(importData);
+  }
+}
+
+async function handleImportData(importData) {
   if (importData && importData.startsWith('web+vod://import?data=')) {
     const encodedPayload = importData.replace('web+vod://import?data=', '');
 
     try {
       const payload = JSON.parse(decodeURIComponent(encodedPayload));
 
-      if (confirm(`Alguém compartilhou "${payload.name}" com ${payload.videos?.length} vídeos. Deseja importar?`)) {
+      const confirmed = await showConfirm(
+        'Importar Playlist',
+        `Alguém compartilhou "${payload.name}" com ${payload.videos?.length} vídeos. Deseja importar?`,
+        'Importar',
+        'Agora Não'
+      );
+
+      if (confirmed) {
 
         const newPlId = await db.playlists.put({
           name: payload.name + ' (Importada)',
@@ -769,7 +1004,7 @@ async function checkDeepLinks() {
         for (const simpleVid of payload.videos) {
           const remoteReference = cachedCatalog.find(c => c.id == simpleVid.id);
           if (remoteReference) {
-            const localVidId = 'vid_' + remoteReference.id + '_' + Date.now() + Math.random().toString(36).substr(2, 5);
+            const localVidId = 'vid_' + remoteReference.id;
             await db.playlist_videos.put({
               playlistId: newPlId,
               videoId: localVidId,
@@ -788,6 +1023,7 @@ async function checkDeepLinks() {
         window.history.replaceState({}, document.title, window.location.pathname);
         currentPlaylistId = newPlId;
         viewState = 'PLAYLIST';
+        render();
       } else {
         window.history.replaceState({}, document.title, window.location.pathname);
       }

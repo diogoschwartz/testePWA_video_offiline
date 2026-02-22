@@ -123,3 +123,32 @@ export async function downloadPlaylistUrls(videosList, onVideoProgress, onVideoC
         }
     }
 }
+
+export async function cacheAsset(url) {
+    if (!url) return;
+    try {
+        const cache = await caches.open('vox-assets-cache');
+        // Verifica se já está em cache para evitar re-download
+        const existing = await cache.match(url);
+        if (existing) return;
+
+        console.log(`🖼️ Cacheando asset: ${url}`);
+        await cache.add(url);
+    } catch (err) {
+        console.warn(`Falha ao cachear asset [${url}]:`, err);
+    }
+}
+
+export async function clearAllStorage() {
+    // 1. Limpa todas as tabelas de dados brutos de vídeo
+    await db.chunks.clear();
+    await db.videos.clear();
+
+    // 2. Limpa o Cache API (thumbnails e capas)
+    try {
+        await caches.delete('vox-assets-cache');
+        console.log("🧹 Cache API 'vox-assets-cache' removido.");
+    } catch (e) {
+        console.error("Falha ao deletar Cache API", e);
+    }
+}

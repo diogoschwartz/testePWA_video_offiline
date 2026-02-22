@@ -108,6 +108,20 @@ button.danger:hover {
   background-color: rgba(239, 68, 68, 0.1);
 }
 
+button.danger-fill {
+  background-color: var(--danger);
+  color: white;
+  border: none;
+}
+
+button.danger-fill:hover {
+  background-color: #dc2626;
+}
+
+.confirmation-modal {
+  border-top: 4px solid var(--danger);
+}
+
 button.ghost {
   background-color: transparent;
   color: var(--text-muted);
@@ -289,6 +303,7 @@ progress {
   height: 6px;
   border-radius: 3px;
   -webkit-appearance: none;
+  appearance: none;
   border: none;
 }
 

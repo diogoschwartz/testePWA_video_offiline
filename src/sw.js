@@ -12,6 +12,8 @@ const VIDEO_PREFIX = '/offline-video/';
 const CHUNK_SIZE = 2 * 1024 * 1024; // Deve bater com o downloader.js
 
 import { precacheAndRoute } from 'workbox-precaching';
+import { registerRoute } from 'workbox-routing';
+import { CacheFirst } from 'workbox-strategies';
 
 // Precaching automático de todos os arquivos do Vite (HTML/CSS/JS com Hash)
 precacheAndRoute(self.__WB_MANIFEST);
@@ -33,6 +35,18 @@ self.addEventListener('fetch', (event) => {
     }
     // Os assets padrão já são interceptados por baixo dos panos pelo precacheAndRoute()
 });
+
+// 2. Cache de Assets Estáticos (Thumbnails/Capas) - Cache First
+registerRoute(
+    ({ request }) => request.destination === 'image' ||
+        request.url.includes('.jpg') ||
+        request.url.includes('.png') ||
+        request.url.includes('.webp') ||
+        request.url.includes('.gif'),
+    new CacheFirst({
+        cacheName: 'vox-assets-cache',
+    })
+);
 
 
 async function handleVideoRequest(request, pathname) {
