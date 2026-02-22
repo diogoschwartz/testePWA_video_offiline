@@ -16,6 +16,7 @@
     "@supabase/supabase-js": "^2.97.0",
     "dexie": "^4.3.0",
     "html5-qrcode": "^2.3.8",
+    "lucide": "^0.575.0",
     "qrcode": "^1.5.4"
   }
 }

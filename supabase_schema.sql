@@ -20,3 +20,26 @@ ALTER TABLE public.remote_videos ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Permitir leitura anonima de VODs" ON public.remote_videos
     FOR SELECT USING (true);
 
+-- 3. Tabela de Playlists Remotas (para Sincronização)
+CREATE TABLE public.remote_playlists (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    cover_image_url TEXT,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- 4. Tabela de Relacionamento Playlist -> Vídeos
+CREATE TABLE public.remote_playlist_videos (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    playlist_id UUID REFERENCES public.remote_playlists(id) ON DELETE CASCADE,
+    video_id UUID REFERENCES public.remote_videos(id),
+    "order" INTEGER NOT NULL
+);
+
+-- 5. RLS para Playlists
+ALTER TABLE public.remote_playlists ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.remote_playlist_videos ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Leitura anonima playlists" ON public.remote_playlists FOR SELECT USING (true);
+CREATE POLICY "Leitura anonima playlist_videos" ON public.remote_playlist_videos FOR SELECT USING (true);
+

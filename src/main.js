@@ -1,10 +1,32 @@
 import './style.css';
 import { db } from './services/db';
 import { downloadPlaylistUrls, deleteVideo, downloadVideo, cacheAsset, clearAllStorage } from './services/downloader';
-import { getRemoteVideos } from './services/supabase';
+import { getRemoteVideos, getRemotePlaylist, getRemotePlaylistVideos, upsertRemotePlaylist, upsertRemotePlaylistVideos } from './services/supabase';
 import { registerSW } from 'virtual:pwa-register';
 import QRCode from 'qrcode';
 import { Html5Qrcode } from 'html5-qrcode';
+import {
+  createIcons,
+  Settings,
+  Plus,
+  Play,
+  CloudDownload,
+  Download,
+  Check,
+  Cloud,
+  PlusCircle,
+  RefreshCw,
+  Lock,
+  AlertTriangle,
+  User,
+  Folder,
+  Trash2,
+  Film,
+  Share2,
+  Upload,
+  Camera,
+  X
+} from 'lucide';
 
 const app = document.querySelector('#app');
 
@@ -19,6 +41,96 @@ let playingVideoId = null;
 // Cache do catálogo pra não bater no DB toda hora
 let cachedCatalog = [];
 let isStoragePersistent = false;
+let isElderlyMode = localStorage.getItem('isElderlyMode') === 'true';
+
+// ==========================================
+// SEGURANÇA E ACESSIBILIDADE
+// ==========================================
+function showPasswordPrompt(correctPassword = '1234') {
+  return new Promise((resolve) => {
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.style.zIndex = '4000';
+
+    modal.innerHTML = `
+      <div class="modal-content" style="max-width: 300px;">
+        <h3 style="margin-bottom: 1rem; text-align: center;">Área Restrita</h3>
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem; text-align: center;">Digite a senha de acesso:</p>
+        <input type="password" id="settings-password" maxlength="4" style="width: 100%; font-size: 2rem; text-align: center; letter-spacing: 0.5rem; padding: 0.5rem; margin-bottom: 1.5rem; border-radius: 8px; border: 1px solid var(--border);" autofocus />
+        <div style="display: flex; gap: 0.5rem;">
+          <button id="pass-cancel" class="ghost" style="flex: 1;">Voltar</button>
+          <button id="pass-confirm" style="flex: 1;">Entrar</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+    modal.offsetHeight;
+    modal.classList.add('active');
+
+    const input = modal.querySelector('#settings-password');
+    input.focus();
+
+    const cleanup = (result) => {
+      modal.classList.remove('active');
+      setTimeout(() => { modal.remove(); resolve(result); }, 300);
+    };
+
+    modal.querySelector('#pass-confirm').onclick = () => {
+      if (input.value === correctPassword) cleanup(true);
+      else {
+        input.value = '';
+        input.style.borderColor = 'var(--danger)';
+        input.placeholder = 'Incorreta';
+        setTimeout(() => { input.style.borderColor = 'var(--border)'; }, 1000);
+      }
+    };
+    modal.querySelector('#pass-cancel').onclick = () => cleanup(false);
+    input.onkeyup = (e) => { if (e.key === 'Enter') modal.querySelector('#pass-confirm').click(); };
+  });
+}
+
+// ==========================================
+// ROTEAMENTO (HISTORY API)
+// ==========================================
+function navigateTo(state, params = {}, push = true) {
+  viewState = state;
+  if (params.playlistId !== undefined) currentPlaylistId = params.playlistId;
+
+  if (push) {
+    const url = new URL(window.location);
+    url.searchParams.set('view', state);
+    if (params.playlistId) url.searchParams.set('id', params.playlistId);
+    else url.searchParams.delete('id');
+
+    window.history.pushState({ viewState: state, playlistId: params.playlistId }, '', url);
+  }
+
+  render();
+}
+
+window.addEventListener('popstate', (event) => {
+  if (event.state) {
+    navigateTo(event.state.viewState, { playlistId: event.state.playlistId }, false);
+  } else {
+    // Estado inicial (Home)
+    navigateTo('HOME', {}, false);
+  }
+});
+
+// Inicialização baseada na URL ao carregar
+window.addEventListener('load', () => {
+  const params = new URLSearchParams(window.location.search);
+  const v = params.get('view') || 'HOME';
+  const id = params.get('id') ? Number(params.get('id')) : null;
+
+  // Substitui o estado atual pra gente ter o objeto no history.state
+  window.history.replaceState({ viewState: v, playlistId: id }, '', window.location.href);
+
+  viewState = v;
+  currentPlaylistId = id;
+  render();
+});
 
 // ==========================================
 // COMPONENTES REUTILIZÁVEIS
@@ -62,14 +174,41 @@ function showConfirm(title, message, confirmText = 'Confirmar', cancelText = 'Ca
 // ==========================================
 // RENDERIZADOR BASE
 // ==========================================
-function render() {
+async function render() {
   if (viewState === 'HOME') {
-    renderHome();
+    await renderHome();
   } else if (viewState === 'PLAYLIST') {
-    renderPlaylistView();
+    await renderPlaylistView();
   } else if (viewState === 'SETTINGS') {
-    renderSettings();
+    await renderSettings();
   }
+  updateIcons();
+}
+
+function updateIcons() {
+  createIcons({
+    icons: {
+      Settings,
+      Plus,
+      Play,
+      CloudDownload,
+      Download,
+      Check,
+      Cloud,
+      PlusCircle,
+      RefreshCw,
+      Lock,
+      AlertTriangle,
+      User,
+      Folder,
+      Trash2,
+      Film,
+      Share2,
+      Upload,
+      Camera,
+      X
+    }
+  });
 }
 
 // ==========================================
@@ -91,7 +230,7 @@ async function renderHome() {
           <img src="https://dna-positivo.vercel.app/_next/image?url=%2Fimg%2Flogo-180x180.jpg&w=384&q=75" alt="Icon" />
           <h1>Dialogo Dirigido</h1>
         </div>
-        <button id="btn-settings" class="icon-btn" style="background: rgba(0,0,0,0.4); color: white; border-color: rgba(255,255,255,0.2);" title="Configurações">⚙️</button>
+        <button id="btn-settings" class="icon-btn" style="background: rgba(0,0,0,0.4); color: white; border-color: rgba(255,255,255,0.2);" title="Configurações"><i data-lucide="settings"></i></button>
       </div>
     </div>
 
@@ -100,7 +239,7 @@ async function renderHome() {
       
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
         <h2 style="border: none; margin: 0; font-size: 1.4rem;">Minhas Playlists</h2>
-        <button id="btn-open-create-modal" style="padding: 0.5rem 1rem; border-radius: 20px; font-size: 0.9rem;">+ Criar Playlist</button>
+        ${!isElderlyMode ? '<button id="btn-open-create-modal" style="padding: 0.5rem 1rem; border-radius: 20px; font-size: 0.9rem;"><i data-lucide="plus"></i> Criar Playlist</button>' : ''}
       </div>
 
       <div class="fullscreen-grid" id="playlist-list">
@@ -108,13 +247,14 @@ async function renderHome() {
       </div>
     </div>
 
+    ${!isElderlyMode ? `
     <!-- MODAL DE CRIAÇÃO -->
     <div id="create-playlist-modal" class="modal-overlay">
       <div class="modal-content">
         <h3 style="margin-bottom: 1rem;">Nova Playlist</h3>
         <div class="input-group">
-          <input type="text" id="new-playlist-name" placeholder="Nome da Playlist (ex: Viagem)" style="width: 100%; box-sizing: border-box; margin-bottom: 0.5rem;" />
-          <input type="text" id="new-playlist-cover" placeholder="URL da Capa (Opcional)" style="width: 100%; box-sizing: border-box; margin-bottom: 1.5rem;" />
+          <input type="text" id="new-playlist-name" placeholder="Nome da Playlist (ex: Viagem)" style="width: 100%; box-sizing: border-box; margin-bottom: 0.5rem; font-size: 16px;" />
+          <input type="text" id="new-playlist-cover" placeholder="URL da Capa (Opcional)" style="width: 100%; box-sizing: border-box; margin-bottom: 1.5rem; font-size: 16px;" />
           <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
             <button id="btn-cancel-playlist" class="ghost">Cancelar</button>
             <button id="btn-confirm-playlist">Criar</button>
@@ -122,38 +262,41 @@ async function renderHome() {
         </div>
       </div>
     </div>
+    ` : ''}
   `;
 
-  // Bind Open/Close Modal
-  const modal = document.getElementById('create-playlist-modal');
-  document.getElementById('btn-open-create-modal').addEventListener('click', () => {
-    modal.classList.add('active');
-    document.getElementById('new-playlist-name').focus();
-  });
+  if (!isElderlyMode) {
+    // Bind Open/Close Modal
+    const modal = document.getElementById('create-playlist-modal');
+    document.getElementById('btn-open-create-modal').addEventListener('click', () => {
+      modal.classList.add('active');
+      document.getElementById('new-playlist-name').focus();
+    });
 
-  document.getElementById('btn-cancel-playlist').addEventListener('click', () => {
-    modal.classList.remove('active');
-  });
+    document.getElementById('btn-cancel-playlist').addEventListener('click', () => {
+      modal.classList.remove('active');
+    });
 
-  // Fecha clicando fora
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) modal.classList.remove('active');
-  });
+    // Fecha clicando fora
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) modal.classList.remove('active');
+    });
 
-  // Bind Confirm Create
-  document.getElementById('btn-confirm-playlist').addEventListener('click', async () => {
-    const nameInput = document.getElementById('new-playlist-name');
-    const coverInput = document.getElementById('new-playlist-cover');
-    const name = nameInput.value.trim();
-    const cover_image_url = coverInput.value.trim();
+    // Bind Confirm Create
+    document.getElementById('btn-confirm-playlist').addEventListener('click', async () => {
+      const nameInput = document.getElementById('new-playlist-name');
+      const coverInput = document.getElementById('new-playlist-cover');
+      const name = nameInput.value.trim();
+      const cover_image_url = coverInput.value.trim();
 
-    if (name) {
-      await db.playlists.put({ name, cover_image_url, createdAt: new Date() });
-      nameInput.value = '';
-      coverInput.value = '';
-      render();
-    }
-  });
+      if (name) {
+        await db.playlists.put({ name, cover_image_url, createdAt: new Date() });
+        nameInput.value = '';
+        coverInput.value = '';
+        navigateTo('HOME', {}, false); // Rerender
+      }
+    });
+  }
 
   // Bind List de Playlists (Card UI Visual)
   const listEl = document.getElementById('playlist-list');
@@ -175,18 +318,20 @@ async function renderHome() {
 
     item.innerHTML = `<div class="fullscreen-title">${pl.name}</div>`;
     item.addEventListener('click', () => {
-      currentPlaylistId = pl.id;
       activeVideoIndex = -1;
-      viewState = 'PLAYLIST';
-      render();
+      navigateTo('PLAYLIST', { playlistId: pl.id });
     });
     listEl.appendChild(item);
   }
 
-  // NAVEGAR PARA SETTINGS
-  document.getElementById('btn-settings')?.addEventListener('click', () => {
-    viewState = 'SETTINGS';
-    render();
+  // NAVEGAR PARA SETTINGS (COM SENHA SE MODO IDOSO ATIVO)
+  document.getElementById('btn-settings')?.addEventListener('click', async () => {
+    if (isElderlyMode) {
+      const authorized = await showPasswordPrompt();
+      if (authorized) navigateTo('SETTINGS');
+    } else {
+      navigateTo('SETTINGS');
+    }
   });
 }
 
@@ -195,7 +340,10 @@ async function renderHome() {
 // ==========================================
 async function renderPlaylistView() {
   const playlist = await db.playlists.get(currentPlaylistId);
-  if (!playlist) { viewState = 'HOME'; return render(); }
+  if (!playlist) { navigateTo('HOME', {}, false); return; }
+
+  // Sincronização em background se for db:
+  syncOnlinePlaylist(playlist);
 
   const videos = await db.playlist_videos.where({ playlistId: playlist.id }).sortBy('order');
   const videosMeta = await Promise.all(videos.map(v => db.videos.get(v.videoId)));
@@ -227,10 +375,11 @@ async function renderPlaylistView() {
       if (videos.length === 0) return '';
 
       if (allDownloaded) {
-        return `<button id="btn-play-all" class="icon-btn" style="width: auto; padding: 0.5rem 1rem; border-radius: 20px; background: rgba(34, 197, 94, 0.2); color: #86efac; border-color: rgba(34, 197, 94, 0.4);" title="Tocar a Playlist Offline Completa">▶ TOCAR TUDO</button>`;
-      } else {
-        return `<button id="btn-download-all" class="icon-btn" style="width: auto; padding: 0.5rem 1rem; border-radius: 20px; background: rgba(255,255,255,0.2); color: white; border-color: rgba(255,255,255,0.4);" title="Sincronizar Todos os Vídeos Offline">☁️ BAIXAR</button>`;
+        return `<button id="btn-play-all" class="icon-btn" style="width: auto; padding: 0.5rem 1rem; border-radius: 20px; background: rgba(34, 197, 94, 0.2); color: #86efac; border-color: rgba(34, 197, 94, 0.4);" title="Tocar a Playlist Offline Completa"><i data-lucide="play"></i> TOCAR TUDO</button>`;
+      } else if (!isElderlyMode) {
+        return `<button id="btn-download-all" class="icon-btn" style="width: auto; padding: 0.5rem 1rem; border-radius: 20px; background: rgba(255,255,255,0.2); color: white; border-color: rgba(255,255,255,0.4);" title="Sincronizar Todos os Vídeos Offline"><i data-lucide="cloud-download"></i> BAIXAR</button>`;
       }
+      return '';
     })()}
         </div>
       </div>
@@ -253,14 +402,15 @@ async function renderPlaylistView() {
        <div class="list-group" id="video-list">
          ${videos.length === 0 ? '<p class="info">Sua playlist está vazia.</p>' : ''}
        </div>
-    </div>
+     </div>
     
+    ${!isElderlyMode ? `
     <!-- MODAL DE ADICIONAR VIDEO -->
     <div id="add-video-modal" class="modal-overlay">
        <div class="modal-content">
          <h3 style="margin-bottom: 1rem;">Adicionar Vídeo da Nuvem</h3>
          <div class="input-group">
-           <select id="catalog-select" style="width:100%; padding: 0.6rem; margin-bottom: 1.5rem; border-radius: 8px; border: 1px solid var(--border); font-family: inherit;">
+           <select id="catalog-select" style="width:100%; padding: 0.6rem; margin-bottom: 1.5rem; border-radius: 8px; border: 1px solid var(--border); font-family: inherit; font-size: 16px;">
               <option value="">Selecione um vídeo da nuvem...</option>
               ${cachedCatalog.map(c => `<option value="${c.id}">${c.title}</option>`).join('')}
            </select>
@@ -271,44 +421,46 @@ async function renderPlaylistView() {
          </div>
        </div>
     </div>
+    ` : ''}
   `;
 
   document.getElementById('btn-back').addEventListener('click', () => {
-    viewState = 'HOME';
-    render();
+    navigateTo('HOME');
   });
 
-  // Bind Modal Add Video
-  const addVideoModal = document.getElementById('add-video-modal');
+  if (!isElderlyMode) {
+    // Bind Modal Add Video
+    const addVideoModal = document.getElementById('add-video-modal');
 
-  document.getElementById('btn-cancel-add-video').addEventListener('click', () => {
-    addVideoModal.classList.remove('active');
-  });
+    document.getElementById('btn-cancel-add-video').addEventListener('click', () => {
+      addVideoModal.classList.remove('active');
+    });
 
-  addVideoModal.addEventListener('click', (e) => {
-    if (e.target === addVideoModal) addVideoModal.classList.remove('active');
-  });
+    addVideoModal.addEventListener('click', (e) => {
+      if (e.target === addVideoModal) addVideoModal.classList.remove('active');
+    });
 
-  // CONFIRM ADD VIDEO
-  document.getElementById('btn-confirm-add-video').addEventListener('click', async () => {
-    const catalogId = document.getElementById('catalog-select').value;
-    if (catalogId) {
-      const remoteInfo = cachedCatalog.find(c => c.id === catalogId);
-      if (!remoteInfo) return;
+    // CONFIRM ADD VIDEO
+    document.getElementById('btn-confirm-add-video').addEventListener('click', async () => {
+      const catalogId = document.getElementById('catalog-select').value;
+      if (catalogId) {
+        const remoteInfo = cachedCatalog.find(c => c.id === catalogId);
+        if (!remoteInfo) return;
 
-      const vidId = 'vid_' + remoteInfo.id;
-      await db.playlist_videos.put({
-        playlistId: playlist.id,
-        videoId: vidId,
-        url: remoteInfo.download_url,
-        youtube_url: remoteInfo.youtube_url,
-        thumbnail_url: remoteInfo.thumbnail_url,
-        title: remoteInfo.title,
-        order: videos.length
-      });
-      render();
-    }
-  });
+        const vidId = 'vid_' + remoteInfo.id;
+        await db.playlist_videos.put({
+          playlistId: playlist.id,
+          videoId: vidId,
+          url: remoteInfo.download_url,
+          youtube_url: remoteReference?.youtube_url || remoteInfo.youtube_url, // minor fix
+          thumbnail_url: remoteInfo.thumbnail_url,
+          title: remoteInfo.title,
+          order: videos.length
+        });
+        navigateTo('PLAYLIST', { playlistId: playlist.id }, false); // Refresh
+      }
+    });
+  }
 
   // RENDERIZA LISTA DOS VÍDEOS COM BOTÕES DOWNLOAD/PLAY INLINE
   const listEl = document.getElementById('video-list');
@@ -322,12 +474,12 @@ async function renderPlaylistView() {
 
     let actionBtnHTML = '';
     if (isDownloaded) {
-      actionBtnHTML = `<button class="btn-play-item icon-btn" data-idx="${idx}" style="color: var(--success); border-color: var(--success);" title="Tocar Offline">▶</button>`;
+      actionBtnHTML = `<button class="btn-play-item icon-btn" data-idx="${idx}" style="color: var(--success); border-color: var(--success);" title="Tocar Offline"><i data-lucide="play"></i></button>`;
     } else {
-      actionBtnHTML = `<button class="btn-download-item icon-btn ghost" id="btn-dl-${v.videoId}" data-idx="${idx}" data-vid="${v.videoId}" data-url="${v.url}" title="Baixar Vídeo">⬇️</button>`;
+      actionBtnHTML = `<button class="btn-download-item icon-btn ghost" id="btn-dl-${v.videoId}" data-idx="${idx}" data-vid="${v.videoId}" data-url="${v.url}" title="Baixar Vídeo"><i data-lucide="download"></i></button>`;
 
       if (v.youtube_url) {
-        actionBtnHTML += `<button class="btn-youtube-item icon-btn ghost" data-idx="${idx}" style="margin-left:0.5rem; color:#ef4444; border-color:#ef4444;" title="Tocar no YouTube">▶</button>`;
+        actionBtnHTML += `<button class="btn-youtube-item icon-btn ghost" data-idx="${idx}" style="margin-left:0.5rem; color:#ef4444; border-color:#ef4444;" title="Tocar no YouTube"><i data-lucide="play"></i></button>`;
       }
     }
 
@@ -341,13 +493,13 @@ async function renderPlaylistView() {
            <div class="item-info">
               <div class="item-title">${v.order + 1}. ${v.title}</div>
               <div class="item-meta" style="pointer-events: auto;">
-                 ${isDownloaded ? '<span style="color:var(--success)" title="Offline Prontinho">✓</span>' : '<span title="Nuvem (Não baixado)">☁️</span>'}
+                 ${isDownloaded ? '<span style="color:var(--success)" title="Offline Prontinho"><i data-lucide="check"></i></span>' : '<span title="Nuvem (Não baixado)"><i data-lucide="cloud"></i></span>'}
                  <span id="dl-text-${v.videoId}" style="margin-left:8px; color: var(--primary); font-weight: bold; font-size: 0.75rem;"></span>
               </div>
            </div>
         </div>
         <div style="display: flex; align-items: center; z-index: 10;">
-           ${idx === activeVideoIndex ? '<span style="margin-right: 0.5rem; color: var(--primary); font-weight:bold; font-size: 0.8rem">Tocando</span>' : ''}
+           ${idx === activeVideoIndex ? '<span class="playing-label" style="margin-right: 0.5rem; color: var(--primary); font-weight:bold; font-size: 0.8rem">Tocando</span>' : ''}
            ${actionBtnHTML}
         </div>
      `;
@@ -356,6 +508,7 @@ async function renderPlaylistView() {
     let pressTimer;
     const isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
     const startPress = (e) => {
+      if (isElderlyMode) return; // Bloqueia delete no modo idoso
       // Don't trigger if clicking on an interactive button inside the item
       if (e.target.tagName === 'BUTTON') return;
       pressTimer = setTimeout(async () => {
@@ -378,7 +531,7 @@ async function renderPlaylistView() {
             console.log(`📁 Vídeo [${v.videoId}] removido da playlist, mas mantido em cache pois outras playlists o usam.`);
           }
 
-          render();
+          navigateTo('PLAYLIST', { playlistId: playlist.id }, false); // Refresh
         }
       }, 600); // 600ms = long press
     };
@@ -400,16 +553,19 @@ async function renderPlaylistView() {
     listEl.appendChild(item);
   });
 
-  // BOTÃO VISUAL PARA ADICIONAR VÍDEO NO FINAL DA LISTA
-  const addVideoItem = document.createElement('div');
-  addVideoItem.className = 'list-item ghost';
-  addVideoItem.style.justifyContent = 'center';
-  addVideoItem.style.borderStyle = 'dashed';
-  addVideoItem.innerHTML = `<span style="color: var(--text-muted); font-weight: 500;">+ Adicionar Vídeo</span>`;
-  addVideoItem.addEventListener('click', () => {
-    addVideoModal.classList.add('active');
-  });
-  listEl.appendChild(addVideoItem);
+  if (!isElderlyMode) {
+    // BOTÃO VISUAL PARA ADICIONAR VÍDEO NO FINAL DA LISTA
+    const addVideoItem = document.createElement('div');
+    addVideoItem.className = 'list-item ghost';
+    addVideoItem.style.justifyContent = 'center';
+    addVideoItem.style.borderStyle = 'dashed';
+    addVideoItem.innerHTML = `<span style="color: var(--text-muted); font-weight: 500;"><i data-lucide="plus-circle"></i> Adicionar Vídeo</span>`;
+    addVideoItem.addEventListener('click', () => {
+      const addVideoModal = document.getElementById('add-video-modal');
+      addVideoModal.classList.add('active');
+    });
+    listEl.appendChild(addVideoItem);
+  }
 
   // Event Listeners Dinamicos pros botoes da lista
   document.querySelectorAll('.btn-play-item').forEach(btn => {
@@ -448,7 +604,7 @@ async function renderPlaylistView() {
             btn.innerText = `${pct}%`;
           }
         });
-        render(); // Rerenderiza pra virar botaO PLAY verde
+        navigateTo('PLAYLIST', { playlistId: playlist.id }, false); // Refresh
       } catch (err) {
         console.error(err);
         btn.disabled = false;
@@ -481,7 +637,7 @@ async function renderPlaylistView() {
         await deleteVideo(v.videoId);
       }
     }
-    render();
+    navigateTo('PLAYLIST', { playlistId: playlist.id }, false); // Refresh
   });
 
   // TOCAR TUDO (RETRÔATIVO QUANDO TUDO BAIXADO)
@@ -499,78 +655,205 @@ async function renderPlaylistView() {
 // TOCA SEQUENCIAL (YOUTUBE OU LOCAL)
 // ==========================================
 function playSequence(index, allVideos, allMeta, forceYoutube = false, noRender = false) {
+  const previousIndex = activeVideoIndex;
   activeVideoIndex = index;
-  if (!noRender) render(); // reconstrói pra mostrar a caixa de video e marcar active
 
-  // Delay tick pra garatir que a DOM recriou o #player
-  setTimeout(() => {
-    const videoToPlay = allVideos[index];
-    const metaToPlay = allMeta[index]; // array parelelo de metadados
-    const playerContainer = document.getElementById('player-container');
-    if (!playerContainer) return;
+  const playerContainer = document.getElementById('player-container');
+  const videoToPlay = allVideos[index];
+  const metaToPlay = allMeta[index]; // array parelelo de metadados
+  const isDownloaded = metaToPlay && metaToPlay.downloaded >= metaToPlay.size && metaToPlay.size > 0;
+  const isYoutube = forceYoutube || (!isDownloaded && videoToPlay.youtube_url);
 
-    const isDownloaded = metaToPlay && metaToPlay.downloaded >= metaToPlay.size && metaToPlay.size > 0;
-
-    if (forceYoutube || (!isDownloaded && videoToPlay.youtube_url)) {
-      // Converte link do YT pra Embed (ex: watch?v=123 ou youtu.be/123 -> embed/123)
-      let embedUrl = videoToPlay.youtube_url;
-      if (embedUrl.includes('watch?v=')) {
-        embedUrl = embedUrl.replace('watch?v=', 'embed/');
-      } else if (embedUrl.includes('youtu.be/')) {
-        embedUrl = embedUrl.replace('youtu.be/', 'www.youtube.com/embed/');
-      }
-      // Limpa parametros antigos e bota autoplay
-      embedUrl = embedUrl.split('&')[0];
-
-      playerContainer.innerHTML = `<iframe width="100%" height="100%" src="${embedUrl}?autoplay=1" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>`;
-    } else {
-      // Player HTML5 nativo
-      playerContainer.innerHTML = `<video id="player" controls controlsList="nodownload" autoplay></video>`;
-      const player = document.getElementById('player');
-      if (isDownloaded) {
-        player.src = `/offline-video/${videoToPlay.videoId}`;
-      } else {
-        player.src = videoToPlay.url; // Fallback final remoto direto no HTML5 do celular
-      }
-
-      // UX: Focus Mode Classes
-      player.addEventListener('play', () => {
-        document.body.classList.add('video-focus-mode');
-        playerContainer.classList.add('player-focused');
-      });
-
-      const removeFocusMode = () => {
-        document.body.classList.remove('video-focus-mode');
-        playerContainer.classList.remove('player-focused');
-      };
-
-      player.addEventListener('pause', removeFocusMode);
-      player.addEventListener('ended', removeFocusMode);
-
-      // Clicar no escuro do body (fora do player) tbem pausa
-      document.body.addEventListener('click', (e) => {
-        // O overlay eh o proprio pseudo ::before do body (então o clique cai no body direto, nao nos childs)
-        if (e.target === document.body && !player.paused) {
-          player.pause();
-        }
-      });
-
-      player.play().catch(e => console.error("Auto-play blindado?:", e));
-      player.onended = () => {
-        removeFocusMode();
-        playNextOffline(index, allVideos, allMeta);
-      };
-      player.onerror = () => {
-        console.warn("Vídeo corrompido ou offline falhou, pulando...");
-        removeFocusMode();
-        playNextOffline(index, allVideos, allMeta);
-      };
+  // 1. GESTÃO DOS INDICADORES VISUAIS NA LISTA (SEM RERENDER)
+  const listItems = document.querySelectorAll('.list-item');
+  if (listItems.length > 0) {
+    // Remove active do anterior
+    if (previousIndex !== -1 && listItems[previousIndex]) {
+      listItems[previousIndex].classList.remove('active');
+      const label = listItems[previousIndex].querySelector('.playing-label');
+      if (label) label.remove();
     }
-  }, 50);
+    // Adiciona active no novo
+    const newItem = listItems[index];
+    if (newItem) {
+      newItem.classList.add('active');
+      const metaContainer = newItem.querySelector('div[style*="display: flex; align-items: center; z-index: 10;"]');
+      if (metaContainer && !metaContainer.querySelector('.playing-label')) {
+        const span = document.createElement('span');
+        span.className = 'playing-label';
+        span.style.cssText = 'margin-right: 0.5rem; color: var(--primary); font-weight:bold; font-size: 0.8rem';
+        span.innerText = 'Tocando';
+        metaContainer.prepend(span);
+      }
+    }
+  }
+
+  // Se o container sumiu (ex: mudou de rota e voltou), força render da playlist
+  if (!playerContainer) {
+    if (!noRender) navigateTo('PLAYLIST', { playlistId: currentPlaylistId }, false);
+    // Recursão curta pra tentar achar o container novo
+    setTimeout(() => playSequence(index, allVideos, allMeta, forceYoutube, true), 100);
+    return;
+  }
+
+  playerContainer.classList.remove('hidden');
+
+  // 2. GESTÃO DO PLAYER (SUAVE)
+  if (isYoutube) {
+    // Para YouTube, ainda precisamos do iframe
+    let embedUrl = videoToPlay.youtube_url;
+    if (embedUrl.includes('watch?v=')) {
+      embedUrl = embedUrl.replace('watch?v=', 'embed/');
+    } else if (embedUrl.includes('youtu.be/')) {
+      embedUrl = embedUrl.replace('youtu.be/', 'www.youtube.com/embed/');
+    }
+    embedUrl = embedUrl.split('&')[0];
+
+    const currentIframe = playerContainer.querySelector('iframe');
+    const newHtml = `<iframe width="100%" height="100%" src="${embedUrl}?autoplay=1" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>`;
+
+    if (!currentIframe || currentIframe.src !== `${embedUrl}?autoplay=1`) {
+      playerContainer.innerHTML = newHtml;
+    }
+  } else {
+    // Player HTML5 nativo - REAPROVEITA O ELEMENTO SE POSSÍVEL
+    let player = document.getElementById('player');
+    const playerUrl = isDownloaded ? `/offline-video/${videoToPlay.videoId}` : videoToPlay.url;
+
+    if (!player) {
+      playerContainer.innerHTML = `<video id="player" controls controlsList="nodownload" autoplay></video>`;
+      player = document.getElementById('player');
+    }
+
+    if (player.src !== window.location.origin + playerUrl && player.src !== playerUrl) {
+      player.src = playerUrl;
+      player.load();
+    }
+
+    // UX: Focus Mode Classes
+    const applyFocusMode = () => {
+      document.body.classList.add('video-focus-mode');
+      playerContainer.classList.add('player-focused');
+    };
+
+    const removeFocusMode = () => {
+      document.body.classList.remove('video-focus-mode');
+      playerContainer.classList.remove('player-focused');
+    };
+
+    player.onplay = applyFocusMode;
+    player.onpause = removeFocusMode;
+    player.onended = () => {
+      removeFocusMode();
+      playNextOffline(index, allVideos, allMeta);
+    };
+    player.onerror = () => {
+      console.warn("Vídeo falhou, pulando...");
+      removeFocusMode();
+      playNextOffline(index, allVideos, allMeta);
+    };
+
+    player.play().catch(e => console.error("Auto-play blocked:", e));
+  }
+
+  // Clicar no escuro do body (fora do player) tbem pausa
+  const bodyClickPause = (e) => {
+    const player = document.getElementById('player');
+    if (e.target === document.body && player && !player.paused) {
+      player.pause();
+    }
+  };
+  document.body.removeEventListener('click', bodyClickPause);
+  document.body.addEventListener('click', bodyClickPause);
 }
 
-// Procura o próximo que esteja offline pra tocar
-function playNextOffline(currentIndex, allVideos, allMeta) {
+// ==========================================
+// SINCRONIZAÇÃO ONLINE (db: prefix)
+// ==========================================
+async function syncOnlinePlaylist(playlist) {
+  if (!playlist.name.startsWith('db:')) return;
+  if (!navigator.onLine) {
+    console.warn("[Sync] Offline. Pulando sincronização online.");
+    return;
+  }
+
+  const remoteName = playlist.name.replace('db:', '').trim();
+  console.log(`[Sync] Checando atualizações para: ${remoteName}`);
+
+  const remotePlaylist = await getRemotePlaylist(remoteName);
+  if (!remotePlaylist) {
+    console.warn(`[Sync] Playlist remota "${remoteName}" não encontrada no Supabase.`);
+    return;
+  }
+
+  const remoteVideos = await getRemotePlaylistVideos(remotePlaylist.id);
+  const localVideos = await db.playlist_videos.where('playlistId').equals(playlist.id).sortBy('order');
+
+  // Compara IDs para ver se mudou
+  const remoteIds = remoteVideos.map(rv => rv.remote_videos.id).join(',');
+  const localIds = localVideos.map(lv => lv.videoId.replace('vid_', '')).join(',');
+
+  if (remoteIds !== localIds) {
+    console.log("[Sync] Mudança detectada! Atualizando local...");
+
+    // Atualiza metadados da playlist (capa)
+    await db.playlists.update(playlist.id, {
+      cover_image_url: remotePlaylist.cover_image_url || playlist.cover_image_url
+    });
+
+    // Substitui videos
+    await db.playlist_videos.where('playlistId').equals(playlist.id).delete();
+
+    for (const rv of remoteVideos) {
+      const vidMeta = rv.remote_videos;
+      await db.playlist_videos.put({
+        playlistId: playlist.id,
+        videoId: 'vid_' + vidMeta.id,
+        url: vidMeta.download_url,
+        youtube_url: vidMeta.youtube_url,
+        thumbnail_url: vidMeta.thumbnail_url,
+        title: vidMeta.title,
+        order: rv.order
+      });
+    }
+
+    // Mostra Popup
+    showSyncToast(`Playlist "${remoteName}" atualizada!`);
+
+    // Recarrega a view se ainda estiver nela
+    if (viewState === 'PLAYLIST' && currentPlaylistId === playlist.id) {
+      navigateTo('PLAYLIST', { playlistId: playlist.id }, false);
+      // Inicia download dos novos automaticamente
+      setTimeout(() => {
+        const btnDown = document.getElementById('btn-download-all');
+        if (btnDown) btnDown.click();
+      }, 500);
+    }
+  }
+}
+
+function showSyncToast(message) {
+  const toast = document.createElement('div');
+  toast.style.cssText = `
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--primary); color: white; padding: 0.8rem 1.5rem;
+    border-radius: 50px; z-index: 5000; box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    font-weight: 600; font-size: 0.9rem; animation: slideUp 0.3s ease-out;
+  `;
+  toast.innerText = '';
+  const icon = document.createElement('i');
+  icon.setAttribute('data-lucide', 'refresh-cw');
+  icon.style.marginRight = '8px';
+  toast.appendChild(icon);
+  toast.appendChild(document.createTextNode(message));
+  document.body.appendChild(toast);
+  updateIcons();
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transition = 'opacity 0.5s';
+    setTimeout(() => toast.remove(), 500);
+  }, 3000);
+} function playNextOffline(currentIndex, allVideos, allMeta) {
   let nextIdx = currentIndex + 1;
 
   // Acha o primeiro disponivel pra pular
@@ -588,7 +871,7 @@ function playNextOffline(currentIndex, allVideos, allMeta) {
   } else {
     console.log("Fim da Playlist offline.");
     activeVideoIndex = -1;
-    render();
+    navigateTo('PLAYLIST', { playlistId: currentPlaylistId }, false);
   }
 }// ==========================================
 // TELA SETTINGS: Configurações Globais
@@ -613,8 +896,8 @@ async function renderSettings() {
              <div>
                 <div style="text-align: right;">
                   ${isStoragePersistent
-          ? '<span style="color: var(--success); font-size: 0.8rem; display: flex; align-items: center; gap: 0.2rem; justify-content: flex-end;">🔒 Persistente</span>'
-          : '<span style="color: var(--warning); font-size: 0.8rem; display: flex; align-items: center; gap: 0.2rem; justify-content: flex-end;">⚠️ Volátil</span>'}
+          ? '<span style="color: var(--success); font-size: 0.8rem; display: flex; align-items: center; gap: 0.2rem; justify-content: flex-end;"><i data-lucide="lock"></i> Persistente</span>'
+          : '<span style="color: var(--warning); font-size: 0.8rem; display: flex; align-items: center; gap: 0.2rem; justify-content: flex-end;"><i data-lucide="alert-triangle"></i> Volátil</span>'}
                   <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 2px;">${allVideos.length} arquivos baixados</div>
                 </div>
              </div>
@@ -638,9 +921,22 @@ async function renderSettings() {
     <div style="width: 100%; max-width: 600px; margin: 0 auto; padding: 1rem; display: flex; flex-direction: column; gap: 1.5rem;">
        ${storageEstimateHtml}
        
+       <!-- MODO IDOSO -->
+       <div class="card" style="border-left: 4px solid var(--primary);">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+             <div>
+                <h3 style="margin: 0; font-size: 1.1rem;"><i data-lucide="user"></i> Paciente Idoso</h3>
+                <p class="info" style="margin-top: 4px;">Simplifica a tela e trava deleção/adição de conteúdos.</p>
+             </div>
+             <button id="btn-toggle-elderly" class="${isElderlyMode ? 'danger-fill' : ''}" style="border-radius: 20px; padding: 0.5rem 1.5rem;">
+                ${isElderlyMode ? 'DESATIVAR' : 'ATIVAR'}
+             </button>
+          </div>
+       </div>
+
        <!-- GESTÃO DE PLAYLISTS -->
        <div class="card">
-          <h3 style="margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;">📂 Minhas Playlists</h3>
+          <h3 style="margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;"><i data-lucide="folder"></i> Minhas Playlists</h3>
           <div class="list-group">
             ${allPlaylists.length === 0 ? '<p class="info">Nenhuma playlist criada.</p>' : ''}
             ${allPlaylists.map(pl => `
@@ -649,7 +945,7 @@ async function renderSettings() {
                   <div class="item-title">${pl.name}</div>
                   <div class="item-meta">Criada em ${new Date(pl.createdAt).toLocaleDateString()}</div>
                 </div>
-                <button class="btn-delete-playlist icon-btn danger" data-id="${pl.id}" data-name="${pl.name}" title="Apagar Playlist">🗑️</button>
+                ${!isElderlyMode ? `<button class="btn-delete-playlist icon-btn danger" data-id="${pl.id}" data-name="${pl.name}" title="Apagar Playlist"><i data-lucide="trash-2"></i></button>` : ''}
               </div>
             `).join('')}
           </div>
@@ -657,7 +953,7 @@ async function renderSettings() {
 
        <!-- GESTÃO DE ARQUIVOS DE VÍDEO -->
        <div class="card">
-          <h3 style="margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;">🎬 Arquivos Baixados</h3>
+          <h3 style="margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;"><i data-lucide="film"></i> Arquivos Baixados</h3>
           <div class="list-group">
             ${allVideos.length === 0 ? '<p class="info">Nenhum vídeo baixado no cache.</p>' : ''}
             ${allVideos.map(v => `
@@ -666,7 +962,7 @@ async function renderSettings() {
                   <div class="item-title">${v.title}</div>
                   <div class="item-meta">${(v.size / (1024 * 1024)).toFixed(1)} MB • ${v.mimeType}</div>
                 </div>
-                <button class="btn-delete-file icon-btn danger" data-id="${v.id}" data-name="${v.title}" title="Remover Arquivo do Celular">🗑️</button>
+                <button class="btn-delete-file icon-btn danger" data-id="${v.id}" data-name="${v.title}" title="Remover Arquivo do Celular"><i data-lucide="trash-2"></i></button>
               </div>
             `).join('')}
           </div>
@@ -674,14 +970,17 @@ async function renderSettings() {
 
        <!-- QR EXPORT SECTION -->
        <div class="card" style="border: 1px solid rgba(59, 130, 246, 0.3);">
-          <h3 style="color: #93c5fd; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">📡 Compartilhar Playlist</h3>
+          <h3 style="color: #93c5fd; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;"><i data-lucide="share-2"></i> Compartilhar Playlist</h3>
           <p class="info" style="margin-bottom: 1rem;">Gere um QR Code para outro aparelho (com o app instalado) escanear e importar sua playlist instantaneamente.</p>
           
-          <select id="export-playlist-select" style="width:100%; padding: 0.6rem; margin-bottom: 1rem; border-radius: 8px; border: 1px solid var(--border); font-family: inherit;">
+          <select id="export-playlist-select" style="width:100%; padding: 0.6rem; margin-bottom: 1rem; border-radius: 8px; border: 1px solid var(--border); font-family: inherit; font-size: 16px;">
               <option value="">Selecione a playlist...</option>
               ${allPlaylists.map(pl => `<option value="${pl.id}">${pl.name}</option>`).join('')}
           </select>
-          <button id="btn-export-qr" style="width: 100%;">Gerar QR Code 📷</button>
+          <div style="display: flex; gap: 0.5rem;">
+            <button id="btn-export-qr" style="flex: 1;"><i data-lucide="share-2"></i> Gerar QR Code</button>
+            <button id="btn-save-db" style="flex: 1; background: var(--primary); color: white; border: none;"><i data-lucide="upload"></i> Salvar no DB</button>
+          </div>
 
           <div id="qr-result-container" style="display:none; text-align:center; margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px dashed var(--border);">
               <p style="margin-bottom: 1rem; font-weight: 500;">Leia o código abaixo com a câmera:</p>
@@ -691,18 +990,18 @@ async function renderSettings() {
 
        <!-- QR SCANNER SECTION -->
        <div class="card" style="border: 1px solid rgba(34, 197, 94, 0.3);">
-          <h3 style="color: #86efac; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">📸 Importar com Câmera</h3>
+          <h3 style="color: #86efac; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;"><i data-lucide="camera"></i> Importar com Câmera</h3>
           <p class="info" style="margin-bottom: 1rem;">Abra a câmera para escanear uma playlist de outro aparelho.</p>
-          <button id="btn-start-scanner" style="width: 100%; background: var(--success); color: white; border: none;">Escanear QR Code 📸</button>
+          <button id="btn-start-scanner" style="width: 100%; background: var(--success); color: white; border: none;"><i data-lucide="camera"></i> Escanear QR Code</button>
           
           <div id="scanner-container" style="display:none; margin-top: 1.5rem; border-radius: 12px; overflow: hidden; position: relative;">
             <div id="reader" style="width: 100%;"></div>
-            <button id="btn-stop-scanner" class="ghost" style="position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.5); color: white; border-radius: 50%; width: 40px; height: 40px; padding: 0;">✕</button>
+            <button id="btn-stop-scanner" class="ghost" style="position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.5); color: white; border-radius: 50%; width: 40px; height: 40px; padding: 0;"><i data-lucide="x"></i></button>
           </div>
        </div>
 
        <div class="card" style="border: 1px solid rgba(239, 68, 68, 0.3);">
-          <h3 style="color: #fca5a5; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">⚠️ Zona de Perigo</h3>
+          <h3 style="color: #fca5a5; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;"><i data-lucide="alert-triangle"></i> Zona de Perigo</h3>
           <p class="info" style="margin-bottom: 1.5rem;">Apagar tudo limpará todo o cache offline do seu aparelho. Suas playlists continuarão existindo, mas os vídeos precisarão ser baixados novamente.</p>
           <button id="btn-delete-all-global" class="danger" style="width: 100%;">Esvaziar Todo o Cache Offline</button>
        </div>
@@ -710,8 +1009,14 @@ async function renderSettings() {
   `;
 
   document.getElementById('btn-back-settings').addEventListener('click', () => {
-    viewState = 'HOME';
-    render();
+    navigateTo('HOME');
+  });
+
+  // BIND: TOGGLE MODO IDOSO
+  document.getElementById('btn-toggle-elderly').addEventListener('click', () => {
+    isElderlyMode = !isElderlyMode;
+    localStorage.setItem('isElderlyMode', isElderlyMode);
+    renderSettings();
   });
 
   // BIND: DELETAR PLAYLIST
@@ -784,6 +1089,54 @@ async function renderSettings() {
     } catch (err) {
       console.error(err);
       alert("Erro ao gerar QR Code.");
+    }
+  });
+
+  // SALVAR NO DB (ONLINE SYNC)
+  document.getElementById('btn-save-db').addEventListener('click', async () => {
+    const exportSelect = document.getElementById('export-playlist-select');
+    const plId = Number(exportSelect.value);
+    if (!plId) return alert('Selecione uma playlist primeiro.');
+
+    if (!navigator.onLine) return alert("Você precisa estar online para salvar no DB.");
+
+    const btn = document.getElementById('btn-save-db');
+    const originalText = btn.innerText;
+    btn.disabled = true;
+    btn.innerText = "Subindo... ⏳";
+
+    try {
+      const pl = allPlaylists.find(x => x.id === plId);
+      const plVideos = await db.playlist_videos.where({ playlistId: plId }).sortBy('order');
+
+      // 1. Sobe metadados (Upsert por Nome)
+      const remotePl = await upsertRemotePlaylist(pl);
+
+      // 2. Sobe lista de vídeos
+      await upsertRemotePlaylistVideos(remotePl.id, plVideos);
+
+      showSyncToast("Playlist salva na nuvem com sucesso!");
+
+      // Sugestão de UX: avisar sobre o prefixo db:
+      if (!pl.name.startsWith('db:')) {
+        const wantsPrefix = await showConfirm(
+          "Ativar Sincronização?",
+          "Deseja adicionar o prefixo 'db:' ao nome desta playlist para que ela se auto-atualize neste aparelho no futuro?",
+          "Sim, atuar",
+          "Agora não"
+        );
+        if (wantsPrefix) {
+          await db.playlists.update(pl.id, { name: 'db:' + pl.name });
+          renderSettings();
+        }
+      }
+
+    } catch (err) {
+      console.error(err);
+      alert("Erro ao sincronizar com o banco de dados.");
+    } finally {
+      btn.disabled = false;
+      btn.innerText = originalText;
     }
   });
 
@@ -919,26 +1272,38 @@ async function initiateDownloadQueue(videosObjList) {
 // ==========================================
 // UX: AUTO-FULLSCREEN POR ROTAÇÃO (MOBILE)
 // ==========================================
-window.addEventListener('orientationchange', () => {
+const handleOrientation = () => {
   const player = document.getElementById('player');
-  if (!player) return;
+  if (!player || player.paused) return;
 
-  // 90 ou -90 (Landscape) | 0 ou 180 (Portrait)
-  if (Math.abs(window.orientation) === 90) {
+  const type = screen.orientation ? screen.orientation.type : (window.orientation === 90 || window.orientation === -90 ? 'landscape' : 'portrait');
+
+  if (type.includes('landscape')) {
     if (player.requestFullscreen) {
       player.requestFullscreen().catch(err => console.log('Fullscreen barrado pelo SO:', err));
-    } else if (player.webkitRequestFullscreen) { /* Safari */
+    } else if (player.webkitRequestFullscreen) {
       player.webkitRequestFullscreen();
     }
   } else {
     if (document.fullscreenElement || document.webkitFullscreenElement) {
       if (document.exitFullscreen) {
         document.exitFullscreen();
-      } else if (document.webkitExitFullscreen) { /* Safari */
+      } else if (document.webkitExitFullscreen) {
         document.webkitExitFullscreen();
       }
     }
   }
+};
+
+if (screen.orientation && screen.orientation.addEventListener) {
+  screen.orientation.addEventListener('change', handleOrientation);
+} else {
+  window.addEventListener('orientationchange', handleOrientation);
+}
+
+// Fallback extra para desktops ou navegadores sem Screen Orientation API
+window.matchMedia("(orientation: landscape)").addEventListener("change", (e) => {
+  if (e.matches) handleOrientation();
 });
 
 // ==========================================
@@ -988,12 +1353,23 @@ async function handleImportData(importData) {
       );
 
       if (confirmed) {
+        // 1. Procurar se já existe uma playlist com o mesmo nome para sobrescrever
+        const existing = await db.playlists.where('name').equalsIgnoreCase(payload.name).first();
+        let targetPlId;
 
-        const newPlId = await db.playlists.put({
-          name: payload.name + ' (Importada)',
-          cover_image_url: payload.cover,
-          createdAt: new Date()
-        });
+        if (existing) {
+          targetPlId = existing.id;
+          // Limpa vídeos antigos antes de reinserir o novo set da importação
+          await db.playlist_videos.where('playlistId').equals(targetPlId).delete();
+          console.log(`[Import] Sobrescrevendo playlist existente: ${payload.name}`);
+        } else {
+          targetPlId = await db.playlists.put({
+            name: payload.name,
+            cover_image_url: payload.cover,
+            createdAt: new Date()
+          });
+          console.log(`[Import] Criando nova playlist: ${payload.name}`);
+        }
 
         // Carrega catalogo antes pra cruzar dados ricos
         if (cachedCatalog.length === 0) {
@@ -1006,7 +1382,7 @@ async function handleImportData(importData) {
           if (remoteReference) {
             const localVidId = 'vid_' + remoteReference.id;
             await db.playlist_videos.put({
-              playlistId: newPlId,
+              playlistId: targetPlId,
               videoId: localVidId,
               url: remoteReference.download_url,
               youtube_url: remoteReference.youtube_url,
@@ -1021,7 +1397,7 @@ async function handleImportData(importData) {
 
         // Limpar URL bar depois
         window.history.replaceState({}, document.title, window.location.pathname);
-        currentPlaylistId = newPlId;
+        currentPlaylistId = targetPlId;
         viewState = 'PLAYLIST';
         render();
       } else {
@@ -1046,6 +1422,15 @@ const updateSW = registerSW({
   onOfflineReady() {
     console.log("App pronto para trabalhar 100% offline nativamente.");
   },
+  onRegisteredSW(swUrl, r) {
+    if (r) {
+      // Verifica atualizações a cada 1 hora
+      setInterval(() => {
+        console.log("Checando atualizações do PWA...");
+        r.update();
+      }, 60 * 60 * 1000);
+    }
+  }
 });
 
 async function boot() {
