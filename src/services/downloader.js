@@ -140,15 +140,25 @@ export async function cacheAsset(url) {
 }
 
 export async function clearAllStorage() {
-    // 1. Limpa todas as tabelas de dados brutos de vídeo
-    await db.chunks.clear();
-    await db.videos.clear();
+    console.log("🚀 Iniciando limpeza profunda (Nuclear Mode)...");
 
-    // 2. Limpa o Cache API (thumbnails e capas)
+    // 1. Limpa todas as tabelas do nosso banco principal
     try {
-        await caches.delete('vox-assets-cache');
-        console.log("🧹 Cache API 'vox-assets-cache' removido.");
+        await db.chunks.clear();
+        await db.videos.clear();
+        console.log("✅ Tabelas de vídeos e chunks limpas.");
     } catch (e) {
-        console.error("Falha ao deletar Cache API", e);
+        console.error("Erro ao limpar tabelas", e);
+    }
+
+    // 2. Limpa ABSOLUTAMENTE TODOS os caches (incluindo precache do PWA e Workbox)
+    try {
+        const cacheNames = await caches.keys();
+        for (const name of cacheNames) {
+            await caches.delete(name);
+            console.log(`🧹 Cache '${name}' removido.`);
+        }
+    } catch (e) {
+        console.error("Erro ao limpar Caches", e);
     }
 }
