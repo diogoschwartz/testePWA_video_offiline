@@ -23,8 +23,9 @@ export default defineConfig({
                 icons: [
                     {
                         src: 'https://dna-positivo.vercel.app/_next/image?url=%2Fimg%2Flogo-180x180.jpg&w=384&q=75',
-                        sizes: '192x192',
-                        type: 'image/png'
+                        sizes: '192x192 512x512',
+                        type: 'image/jpeg',
+                        purpose: 'any maskable'
                     }
                 ],
                 protocol_handlers: [
